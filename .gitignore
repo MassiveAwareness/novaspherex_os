@@ -1,0 +1,6 @@
+/target
+/third_party
+*.iso
+*.img
+*.log
+.DS_Store

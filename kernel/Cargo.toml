@@ -1,0 +1,14 @@
+[package]
+name = "novaspherex_kernel"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "novaspherex_kernel"
+path = "src/main.rs"
+test = false
+bench = false
+harness = false
+
+[dependencies]
