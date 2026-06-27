@@ -1,9 +1,25 @@
+//! Minimal Limine boot protocol bindings
+//! 
+//! This module defines the Limine request structures used by the early kernel.
+//! Limine discovers these statically-linked request objects through special
+//! linker sections, fills in their response pointers during boot, and then
+//! transfers control to `_start`.
+//! 
+//! We intentionally keep this module small and explicit isntead of hiding the
+//! boot protocol behind a large abstraction. Early boot code benefits from
+//! being easy to inspect.
+
 #![allow(dead_code)]
 
 use core::ptr;
 
+/// Common Limine request magic prefix
+/// 
+/// Limine request IDs start with this common two-word magic value followed by
+/// a request-specific identifier.
 const COMMON_MAGIC: [u64; 2] = [0xc7b1dd30df4c8b88, 0x0a82e883a194f07b];
 
+/// Request ID for bootloader name/version information
 const BOOTLOADER_INFO_REQUEST_ID: [u64; 4] = [
     COMMON_MAGIC[0],
     COMMON_MAGIC[1],
@@ -11,6 +27,7 @@ const BOOTLOADER_INFO_REQUEST_ID: [u64; 4] = [
     0x279426fcf5f59740,
 ];
 
+/// Request ID for framebuffer information
 const FRAMEBUFFER_REQUEST_ID: [u64; 4] = [
     COMMON_MAGIC[0],
     COMMON_MAGIC[1],
@@ -18,6 +35,10 @@ const FRAMEBUFFER_REQUEST_ID: [u64; 4] = [
     0xa3148604f6fab11b,
 ];
 
+/// Start marker for Limine requests
+/// 
+/// The `#[used]` attribute prevents the compiler/linker from discarding this
+/// symbol even though Rust code does not reference it directly.
 #[used]
 #[link_section = ".limine_requests_start"]
 static LIMINE_REQUESTS_START_MARKER: [u64; 4] = [
@@ -27,6 +48,11 @@ static LIMINE_REQUESTS_START_MARKER: [u64; 4] = [
     0x181e920a7852b9d9,
 ];
 
+/// Limine base revision request
+/// 
+/// Limine acknowledges this request by overwriting the thrid field with `0`.
+/// We use this as a simple sanity check that the bootloader recognized our
+/// request block.
 #[used]
 #[link_section = ".limine_requests"]
 static mut LIMINE_BASE_REVISION: [u64; 3] = [
@@ -35,6 +61,10 @@ static mut LIMINE_BASE_REVISION: [u64; 3] = [
     6,
 ];
 
+/// Bootloader information request
+/// 
+/// Limine fills `response` with a pointer to a `BootloaderInfoResponse` if the
+/// request is supported.
 #[used]
 #[link_section = ".limine_requests"]
 static mut BOOTLOADER_INFO_REQUEST: BootloaderInfoRequest = BootloaderInfoRequest {
@@ -43,6 +73,10 @@ static mut BOOTLOADER_INFO_REQUEST: BootloaderInfoRequest = BootloaderInfoReques
     response: ptr::null_mut(),
 };
 
+/// Framebuffer request
+/// 
+/// Limine fills `response` with framebuffer metadata if a framebuffer is
+/// available.
 #[used]
 #[link_section = ".limine_requests"]
 static mut FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest {
@@ -51,6 +85,7 @@ static mut FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest {
     response: ptr::null_mut(),
 };
 
+/// End marker for Limine requests
 #[used]
 #[link_section = ".limine_requests_end"]
 static LIMINE_REQUESTS_END_MARKER: [u64; 2] = [
@@ -58,6 +93,7 @@ static LIMINE_REQUESTS_END_MARKER: [u64; 2] = [
     0x9572709f31764c62,
 ];
 
+/// Limine bootloader-info request structure
 #[repr(C)]
 pub struct BootloaderInfoRequest {
     id: [u64; 4],
@@ -65,6 +101,10 @@ pub struct BootloaderInfoRequest {
     response: *mut BootloaderInfoResponse,
 }
 
+/// Limine bootloader-info response
+/// 
+/// The `name` and `version` fields are null-terminated C strings owned by the
+/// bootloader.
 #[repr(C)]
 pub struct BootloaderInfoResponse {
     revision: u64,
@@ -72,6 +112,7 @@ pub struct BootloaderInfoResponse {
     pub version: *mut i8,
 }
 
+/// Limine framebuffer request structure
 #[repr(C)]
 pub struct FramebufferRequest {
     id: [u64; 4],
@@ -79,6 +120,9 @@ pub struct FramebufferRequest {
     response: *mut FramebufferResponse,
 }
 
+/// Limine framebuffer response
+/// 
+/// `framebuffers` points to an array of framebuffer pointers.
 #[repr(C)]
 pub struct FramebufferResponse {
     revision: u64,
@@ -86,6 +130,7 @@ pub struct FramebufferResponse {
     framebuffers: *mut *mut Framebuffer,
 }
 
+/// Limine video mode metadata
 #[repr(C)]
 pub struct VideoMode {
     pitch: u64,
@@ -101,6 +146,7 @@ pub struct VideoMode {
     blue_mask_shift: u8,
 }
 
+/// Limine Framebuffer metadata
 #[repr(C)]
 pub struct Framebuffer {
     address: *mut u8,
@@ -122,21 +168,50 @@ pub struct Framebuffer {
     modes: *mut *mut VideoMode,
 }
 
+/// Returns whether Limine acknowledged the requested base revision
 pub fn base_revision_supported() -> bool {
+    // SAFETY: Limine may mutate this static before transferring control to the
+    // kernel. After boot, we only read it using volatile access so the compiler
+    // does not assume ordinary Rust ownership semantics for this boot protocol
+    // memory.
     unsafe {
         let base = ptr::addr_of!(LIMINE_BASE_REVISION).cast::<u64>();
         ptr::read_volatile(base.add(2)) == 0
     }
 }
 
+/// Returns Limine bootloader information, if available
+/// 
+/// # Safety
+/// The returned reference points to memory provided by the bootloader. The
+/// called must only use it during early boot while Limine-provided structures
+/// are still considered valid.
 pub unsafe fn bootloader_info() -> Option<&'static BootloaderInfoResponse> {
     let request = ptr::addr_of!(BOOTLOADER_INFO_REQUEST);
-    (*request).response.as_ref()
+
+    // SAFETY: The response pointer is written by Limine before entering the
+    // kernel. We only conver a non-null response pointer into a shared
+    // reference.
+    unsafe {
+        (*request).response.as_ref()
+    }
 }
 
+/// Draws a simple early boot banner into the first framebuffer
+/// 
+/// This is intentionally primitive. It verifies that the framebuffer request is
+/// usable and gives visual feedback before the real graphics subsystem exists.
+/// 
+/// # Safety
+/// This writes directly to a framebuffer pointer provided by Limine. The caller
+/// must ensure this is only used after Limine has initialized the framebuffer
+/// response and before any other graphics owner exists.
 pub unsafe fn draw_boot_banner() {
     let request = ptr::addr_of!(FRAMEBUFFER_REQUEST);
-    let Some(response) = (*request).response.as_ref() else {
+
+    // SAFETY: The response pointer is provided by Limine. A null response means
+    // no framebuffer is available.
+    let Some(response) = (unsafe { (*request).response.as_ref() }) else {
         return;
     };
 
@@ -144,12 +219,16 @@ pub unsafe fn draw_boot_banner() {
         return;
     }
 
-    let framebuffer = *response.framebuffers;
+    // SAFETY: Limine reports at least one framebuffer and `framebuffers` is
+    // non-null. We read the first framebuffer pointer.
+    let framebuffer = unsafe { *response.framebuffers };
     if framebuffer.is_null() {
         return;
     }
 
-    let fb = &*framebuffer;
+    // SAFETY: The framebuffer pointer is provided by Limine and was checked for
+    // null above.
+    let fb = unsafe { &*framebuffer };
     if fb.address.is_null() || fb.bpp < 24 {
         return;
     }
@@ -172,15 +251,24 @@ pub unsafe fn draw_boot_banner() {
 
             let pixel = pack_pixel(fb, r, g, b);
             let offset = y * fb.pitch + x * bytes_per_pixel;
-            write_pixel(fb.address.add(offset as usize), bytes_per_pixel, pixel);
+
+            // SAFETY: The offset is bounded by the small boot banner region,
+            // and the framebuffer pointer was provided by Limine. This is still
+            // raw framebuffer access, so the caller-level safety contract
+            // applies.
+            unsafe {
+                write_pixel(fb.address.add(offset as usize), bytes_per_pixel, pixel);
+            }
         }
     }
 }
 
+/// Returns the smaller of two `u64` values
 fn min_u64(a: u64, b: u64) -> u64 {
     if a < b { a } else { b }
 }
 
+/// Packs an RGB color according to the framebuffer's color masks
 fn pack_pixel(fb: &Framebuffer, r: u8, g: u8, b: u8) -> u32 {
     let r = scale_component(r, fb.red_mask_size) << fb.red_mask_shift;
     let g = scale_component(g, fb.green_mask_size) << fb.green_mask_shift;
@@ -188,6 +276,7 @@ fn pack_pixel(fb: &Framebuffer, r: u8, g: u8, b: u8) -> u32 {
     r | g | b
 }
 
+/// Scales an 8-bit color component down to a framebuffer mask size
 fn scale_component(value: u8, mask_size: u8) -> u32 {
     if mask_size == 0 {
         0
@@ -198,13 +287,24 @@ fn scale_component(value: u8, mask_size: u8) -> u32 {
     }
 }
 
+/// Writes one packed pixel to the framebuffer
 unsafe fn write_pixel(dst: *mut u8, bytes_per_pixel: u64, pixel: u32) {
     match bytes_per_pixel {
-        4 => ptr::write_volatile(dst as *mut u32, pixel),
+        4 => {
+            // SAFETY: Caller guarantees that `dst` points to a valid
+            // framebuffer pixel
+            unsafe {
+                ptr::write_volatile(dst as *mut u32, pixel)
+            }
+        }
         3 => {
-            ptr::write_volatile(dst, pixel as u8);
-            ptr::write_volatile(dst.add(1), (pixel >> 8) as u8);
-            ptr::write_volatile(dst.add(2), (pixel >> 16) as u8);
+            // SAFETY: Caller guarantees that `dst..dst+3` is a valid
+            // framebuffer pixel
+            unsafe {
+                ptr::write_volatile(dst, pixel as u8);
+                ptr::write_volatile(dst.add(1), (pixel >> 8) as u8);
+                ptr::write_volatile(dst.add(2), (pixel >> 16) as u8);
+            }
         }
         _ => {}
     }

@@ -1,14 +1,49 @@
+//! x86_64 exception and interrupt stubs
+//! 
+//! This module contains the low-level assembly entry points used by the IDT,
+//! plus small Rust handlers for early exception diagnostics.
+//! 
+//! The assembly stubs are responsible for:
+//! 
+//! - saving general-purpose registers
+//! - preserving stack layout expectations
+//! - aligning the stack before calling Rust
+//! - passing an `InterruptFrame` pointer to Rust
+//! - returning with `iretq` when the exception is recoverable
+//! 
+//! The current milestone implements:
+//! 
+//! - breakpoint exception handling
+//! - page fault diagnostics
+
 #![allow(dead_code)]
 
 use core::arch::{asm, global_asm};
 
-use crate::halt_loop;
+use super::cpu;
 
+/// Minimal interrupt frame pushed by the CPU for same-priviledge exceptions
+/// 
+/// For the current early kernel state, exceptions happen in ring 0 and return
+/// to ring 0, so the CPU pushes:
+/// 
+/// text
+/// RIP
+/// CS
+/// RFLAGS
+/// 
+/// Exceptions that include an error code, such as page fault, push the error
+/// code in addition to this frame.
 #[repr(C)]
 pub struct InterruptFrame {
+    /// Instruction pointer to resume at or report
     pub instruction_pointer: u64,
+
+    /// Code segment selector saved by the CPU
     pub code_segment: u64,
-    pub cpu_flags: u64,
+
+    /// Saved RFLAGS value
+    pub cpu_flags: u64
 }
 
 global_asm!(
@@ -17,6 +52,11 @@ global_asm!(
 nx_isr_breakpoint:
     cld
 
+    // Save general-purpose registers
+    //
+    // We currently save 15 registers. `rsp` is not saved explicitly because
+    // the CPU-created interrupt frame and the current stack pointer define the
+    // active exception stack layout.
     push rax
     push rbx
     push rcx
@@ -33,20 +73,30 @@ nx_isr_breakpoint:
     push r14
     push r15
 
+    // Align stack before calling Rust
+    //
+    // The Rust ABI expects the stack to be suitably aligned at function call
+    // boundaries. The extra 8-byte padding keeps calls from this hand-written
+    // interrupt stub stable.
     sub rsp, 8
 
-    // For int3, CPU pushed:
-    //   RIP
-    //   CS
-    //   RFLAGS
+    // Breakpoint exceptions do not push an error code
     //
-    // After 15 register pushes and 8 bytes alignment padding,
-    // the interrupt frame starts at rsp + 128.
+    // CPU-pushed frame:
+    //
+    //      RIP
+    //      CS
+    //      RFLAGS
+    //
+    // After 15 registers pushes and 8 vytes of alignment padding, the
+    // InterruptFrame starts at rsp + 128.
     lea rdi, [rsp + 128]
     call nx_breakpoint_handler
 
+    // Remove alignment padding.
     add rsp, 8
 
+    // Restore general-purpose registers in reverse order
     pop r15
     pop r14
     pop r13
@@ -63,6 +113,7 @@ nx_isr_breakpoint:
     pop rbx
     pop rax
 
+    // Return from the exception
     iretq
 
 
@@ -70,6 +121,7 @@ nx_isr_breakpoint:
 nx_isr_page_fault:
     cld
 
+    // Save general-purpose registers
     push rax
     push rbx
     push rcx
@@ -86,33 +138,52 @@ nx_isr_page_fault:
     push r14
     push r15
 
+    // Align stack before calling Rust
     sub rsp, 8
 
-    // For page fault, CPU pushed:
-    //   ERROR CODE
-    //   RIP
-    //   CS
-    //   RFLAGS
+    // Page faults push an error code
     //
-    // After 15 register pushes and 8 bytes alignment padding:
-    //   error code is at rsp + 128
-    //   interrupt frame starts at rsp + 136
+    // CPU-pushed frame:
+    //
+    //      ERROR CODE
+    //      RIP
+    //      CS
+    //      RFLAGS
+    //
+    // After argument in SysV x86_64 ABI:       rdi = &InterruptFrame
+    // Second argument in SysV x86_64 ABI:      rsi = error_code
     lea rdi, [rsp + 136]
     mov rsi, [rsp + 128]
     call nx_page_fault_handler
 
-    // nx_page_fault_handler never returns.
+    // The Rust page fault handler is fatal and never returns
     hlt
 "#
 );
 
+/// Triggers a breakpoint exception using `int3`
+/// 
+/// This is used as a smoke test for the IDT and exception return path.
 pub fn trigger_breakpoint() {
+
+    // SAFETY: `int3` intentionally triggers vector 3. The IDT must already
+    // contain a valid a valid breakpoint handler before this function is called.
+    //
+    // This instruction uses the stack implicitly because the CPU pushes an
+    // interrupt frame. Therefore this block must not use the `nostack` option.
     unsafe {
         asm!("int3", options(nomem));
     }
 }
 
+/// Triggers a page fault by reading from an intentionally invalid address
+/// 
+/// This test is expected to be fatal. The page fault handler logs diagnostics
+/// and enters a panic halt loop.
 pub fn trigger_page_fault() {
+    // SAFETY: This intentionally performs an invalid memory read to exercise
+    // the page fault handler. It should only be called in controlled debug
+    // scenarios after the page fault handler is installed.
     unsafe {
         let bad_address: u64 = 0xdead_beef;
 
@@ -125,6 +196,10 @@ pub fn trigger_page_fault() {
     }
 }
 
+/// Rust breakpoint exception handler
+/// 
+/// Breakpoint exceptions are recoverable in this early kernel. After logging,
+/// the assembly stub restores registers and returns with `iretq`.
 #[no_mangle]
 extern "C" fn nx_breakpoint_handler(frame: &InterruptFrame) {
     crate::kprintln!(
@@ -135,17 +210,14 @@ extern "C" fn nx_breakpoint_handler(frame: &InterruptFrame) {
     );
 }
 
+/// Rust page fault handler
+/// 
+/// Page faults are currently treated as fatal. The handler logs the faulting
+/// virtual address from `CR2`, the CPU-provided error code, and the saved
+/// instruction frame, then halts the CPU with interrupts disabled.
 #[no_mangle]
 extern "C" fn nx_page_fault_handler(frame: &InterruptFrame, error_code: u64) -> ! {
-    let fault_address: u64;
-
-    unsafe {
-        asm!(
-            "mov {}, cr2",
-            out(reg) fault_address,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    let fault_address = cpu::read_cr2();
 
     crate::kprintln!("[NX][INT] PAGE FAULT");
     crate::kprintln!("[NX][INT] fault address: {:#018x}", fault_address);
@@ -155,5 +227,5 @@ extern "C" fn nx_page_fault_handler(frame: &InterruptFrame, error_code: u64) -> 
     crate::kprintln!("[NX][INT] flags:         {:#018x}", frame.cpu_flags);
     crate::kprintln!("[NX][INT] halting after page fault");
 
-    halt_loop();
+    cpu::panic_halt_loop();
 }

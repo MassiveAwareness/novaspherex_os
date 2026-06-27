@@ -14,9 +14,9 @@
 - [x] Own GDT
 - [x] Own IDT
 - [x] Breakpoint exception handler
-- [ ] Page fault handler
-- [ ] Basic exception logging
-- [ ] Halt-safe panic path
+- [x] Page fault handler
+- [x] Basic exception logging
+- [x] Halt-safe panic path
 - [ ] PIT/APIC timer interrupt draft
 
 ## Milestone 2 — Memory

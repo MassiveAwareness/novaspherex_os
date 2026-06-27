@@ -1,3 +1,12 @@
+//! NovasphereX kernel entry point
+//! 
+//! This module contains the early boot pipeline after Limine trasfers control
+//! to the Rust kernel.
+//! 
+//! The entry point stays intentionally small. Architecture-specific operations
+//! are routed through `arch`, boot protocol access through `limine`, and early
+//! logging through `serial`.
+
 #![no_std]
 #![no_main]
 
@@ -7,6 +16,19 @@ mod serial;
 
 use core::panic::PanicInfo;
 
+/// Enables the recoverable breakpoint exception smoke test
+const RUN_BREAKPOINT_TEST: bool = true;
+
+/// Enables the fatal page fault smoke test
+/// 
+/// Keep this disabled during normal development boots because the page fault
+/// handler intentionally halts the kernel after logging diagnostics.
+const RUN_PAGE_FAULT_TEST: bool = false;
+
+/// Kernel entry point called by the bootloader
+/// 
+/// Limine jumps here after loading the kernel ELF and preparing the requested
+/// boot protocol responses.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     serial::init();
@@ -22,6 +44,9 @@ pub extern "C" fn _start() -> ! {
         kprintln!("[NX] WARNING: Limine base revision was not acknowledged");
     }
 
+    // SAFETY: Limine response pointers are valid during early boot if the
+    // corresponding request was acknowledged. Each helper performs null checks
+    // before using optional responses.
     unsafe {
         if let Some(info) = limine::bootloader_info() {
             kprint!("[NX] bootloader: ");
@@ -39,27 +64,31 @@ pub extern "C" fn _start() -> ! {
     kprintln!("[NX] initializing CPU baseline");
     arch::init();
 
-    kprintln!("[NX] triggering breakpoint exception test");
-    arch::test_breakpoint();
-    kprintln!("[NX] breakpoint exception returned successfully");
+    if RUN_BREAKPOINT_TEST {
+        kprintln!("[NX] triggering breakpoint exception test");
+        arch::test_breakpoint();
+        kprintln!("[NX] breakpoint exception returned successfully");
+    }
 
-    kprintln!("[NX] triggering page fault test");
-    arch::test_page_fault();
+    if RUN_PAGE_FAULT_TEST {
+        kprintln!("[NX] triggering page fault test");
+        arch::test_page_fault();
+
+        kprintln!("[NX] ERROR: page fault test returned unexpectedly");
+        arch::panic_halt_loop();
+    }
 
     kprintln!("[NX] reached halt loop");
-    halt_loop();
+    arch::halt_loop();
 }
 
+/// Kernel panic handler
+/// 
+/// At this stage of the project, a panic is patal. We log the panic, dump a
+/// small CPU state snapshot, disable maskable interrupts, and halt forever.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     kprintln!("[NX][PANIC] {}", info);
-    halt_loop();
-}
-
-pub fn halt_loop() -> ! {
-    loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
+    arch::log_cpu_state("panic");
+    arch::panic_halt_loop();
 }
