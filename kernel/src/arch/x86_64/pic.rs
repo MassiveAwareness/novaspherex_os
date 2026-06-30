@@ -215,7 +215,7 @@ pub fn log_irq_state(label: &str) {
     let state = read_irq_state();
 
     crate::kprintln!(
-        "[NX][PIC] irq state: {}: mster_irr={:#010b} slave_irr={:#010b} master_isr={:#010b} slave_isr={:#010b}",
+        "[NX][PIC] irq state: {}: master_irr={:#010b} slave_irr={:#010b} master_isr={:#010b} slave_isr={:#010b}",
         label,
         state.master_irr,
         state.slave_irr,

@@ -35,6 +35,14 @@ const FRAMEBUFFER_REQUEST_ID: [u64; 4] = [
     0xa3148604f6fab11b,
 ];
 
+/// Request ID for Higher-Half Direct Map information
+const HHDM_REQUEST_ID: [u64; 4] = [
+    COMMON_MAGIC[0],
+    COMMON_MAGIC[1],
+    0x48dcf1cb8ad2b852,
+    0x63984e959a98244b
+];
+
 /// Start marker for Limine requests
 /// 
 /// The `#[used]` attribute prevents the compiler/linker from discarding this
@@ -83,6 +91,17 @@ static mut FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest {
     id: FRAMEBUFFER_REQUEST_ID,
     revision: 0,
     response: ptr::null_mut(),
+};
+
+/// Higher-Half Direct Map request
+/// 
+/// Limine fills `response` with an HHDM offset if the request is supported.
+#[used]
+#[link_section = ".limine_requests"]
+static mut HHDM_REQUEST: HhdmRequest = HhdmRequest {
+    id: HHDM_REQUEST_ID,
+    revision: 0,
+    response: ptr::null_mut()
 };
 
 /// End marker for Limine requests
@@ -166,6 +185,25 @@ pub struct Framebuffer {
     edid: *mut u8,
     mode_count: u64,
     modes: *mut *mut VideoMode,
+}
+
+/// Limine HHDM request structure
+#[repr(C)]
+pub struct HhdmRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *mut HhdmResponse
+}
+
+/// Limine HHDM response
+///
+/// `offset` is the virtual address offset used for the higher-half direct map.
+/// A physical address `p` can be addressed as virtual address `offset + p`,
+/// provided that the physical region is actually part of Limine's HHDM mapping.
+#[repr(C)]
+pub struct HhdmResponse {
+    revision: u64,
+    pub offset: u64
 }
 
 /// Returns whether Limine acknowledged the requested base revision
@@ -307,5 +345,31 @@ unsafe fn write_pixel(dst: *mut u8, bytes_per_pixel: u64, pixel: u32) {
             }
         }
         _ => {}
+    }
+}
+
+/// Returns the Limine Higher-Half Direct Map offset, if available
+pub fn hhdm_offset() -> Option<u64> {
+    let request = ptr::addr_of!(HHDM_REQUEST);
+
+    // SAFETY: Limine writes the response pointer before entering the kernel.
+    // We only read the pointer and convert a non-null response to a shared
+    // reference.
+    let response = unsafe {
+        (*request).response.as_ref()?
+    };
+
+    Some(response.offset)
+}
+
+/// Logs the HHDM offset for early boot diagnostics.
+pub fn log_hhdm() {
+    match hhdm_offset() {
+        Some(offset) => {
+            crate::kprintln!("[NX][HHDM] offset={:#018x}", offset);
+        },
+        None => {
+            crate::kprintln!("[NX][HHDM] unavailable");
+        }
     }
 }

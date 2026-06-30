@@ -5,11 +5,12 @@
 
 #![allow(dead_code)]
 
+pub mod cpu;
 pub mod gdt;
 pub mod idt;
-pub mod cpu;
 pub mod pic;
 pub mod pit;
+pub mod addr;
 pub mod apic;
 pub mod port;
 pub mod timer;
@@ -36,7 +37,10 @@ pub fn init() {
     idt::init();
     cpu::log_state("after IDT");
 
+    addr::init();
+
     apic::init_probe();
+    timer::select_best_eoi_backend();
 
     pic::init();
     pit::init(timer::TIMER_FREQUENCY_HZ);
