@@ -70,6 +70,10 @@ pub extern "C" fn _start() -> ! {
         kprintln!("[NX] breakpoint exception returned successfully");
     }
 
+    /* kprintln!("[NX] triggering timer interrupt vector test");
+    arch::test_timer_interrupt();
+    kprintln!("[NX] timer interrupt vector returned successfully"); */
+
     if RUN_PAGE_FAULT_TEST {
         kprintln!("[NX] triggering page fault test");
         arch::test_page_fault();

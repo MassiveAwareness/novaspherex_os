@@ -82,7 +82,6 @@ const KERNEL_DATA_DESCRIPTOR: u64 = 0x00cf92000000ffff;
 /// 
 /// Layout (in order):
 /// 
-/// text
 /// 0x00 -> null
 /// 0x08 -> NovasphereX kernel code
 /// 0x10 -> NovasphereX kernel data

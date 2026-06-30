@@ -82,7 +82,7 @@ Write-Host "OVMF: $OvmfCode"
 Write-Host "ESP:  $Esp"
 
 & $QemuPath `
-    -M q35 `
+    -M pc `
     -m 512M `
     -drive "if=pflash,format=raw,readonly=on,file=$OvmfCode" `
     -drive "format=raw,file=fat:rw:$Esp" `

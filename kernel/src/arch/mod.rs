@@ -5,6 +5,8 @@
 //! code should call this module instead of directly depending on
 //! `arch::x86_64`.
 
+#![allow(dead_code)]
+
 #[cfg(target_arch = "x86_64")]
 pub mod x86_64;
 
@@ -33,6 +35,14 @@ pub fn halt_loop() -> ! {
 /// Enters a fatal halt loop after disabling maskable interrupts
 pub fn panic_halt_loop() -> ! {
     x86_64::panic_halt_loop();
+}
+
+/// Runs the architecture-specific timer interrupt vector smoke test
+/// 
+/// This test invokes vector 32 through a software interrupt. Is does not test
+/// physical PIT/PIC delivery.
+pub fn test_timer_interrupt() {
+    x86_64::test_timer_interrupt();
 }
 
 /// Logs architecture-specific CPU state for diagnostics

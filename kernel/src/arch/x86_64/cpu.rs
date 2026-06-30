@@ -244,3 +244,57 @@ pub fn log_state(label: &str) {
         state.cr2
     );
 }
+
+/// Reads a model-specific register
+/// 
+/// Model-specific registers are addressed by a 32-bit MSR number. The value is
+/// returned as a 64-bit integer assembed from `EDX:EAX`.
+/// 
+/// # Safety
+/// The caller must ensure that `msr` is valid on the current CPU. Reading an
+/// unsupported MSR can raise a general protection fault.
+pub unsafe fn read_msr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+
+    // SAFETY: The caller guarantees that the MSR exists and is readable on the
+    // current CPU. `rdmsr` is priviledged and the kernel runs in ring 0.
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    ((high as u64) << 32) | low as u64
+}
+
+/// Writes a model-specific register
+/// 
+/// The 64-bit value is split into `EDX:EAX` before executing `wrmsr`.
+/// 
+/// # Safety
+/// The caller must ensure that `msr` is valid on the current CPU and that
+/// writing `value` is legal for the current CPU state. Writing an unsupported
+/// MSR or invalid bit pattern can raise a general protection fault or destabilize
+/// the system.
+pub unsafe fn write_msr(msr: u32, value: u64) {
+    let low = value as u32;
+    let high = (value >> 32) as u32;
+
+    // SAFETY: The caller guarantees that the MSR exists, is writable, and that
+    // the provided value is valid. `wrmsr` is priviledged and the kernel runs in
+    // ring 0.
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") low,
+            in("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}

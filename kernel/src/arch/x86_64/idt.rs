@@ -32,11 +32,14 @@ const IDT_ENTRY_COUNT: usize = 256;
 const INTERRUPT_GATE: u16 = 0x8e00;
 
 unsafe extern "C" {
-    /// Assembly stub for vector 3, breakpoint exception.
+    /// Assembly stub for vector 3, breakpoint exception
     fn nx_isr_breakpoint();
 
-    /// Assembly stub for vector 14, page fault exception.
+    /// Assembly stub for vector 14, page fault exception
     fn nx_isr_page_fault();
+
+    /// Assembly stub for vector 32, PIT timer interrupt
+    fn nx_isr_timer();
 }
 
 /// One x86_64 IDT entry
@@ -112,6 +115,7 @@ pub fn init() {
     unsafe {
         IDT[3].set_handler(nx_isr_breakpoint as *const () as u64);
         IDT[14].set_handler(nx_isr_page_fault as *const () as u64);
+        IDT[32].set_handler(nx_isr_timer as *const () as u64);
 
         load_idt();
     }
@@ -119,6 +123,7 @@ pub fn init() {
     crate::kprintln!("[NX][IDT] loaded");
     crate::kprintln!("[NX][IDT] breakpoint handler installed at vector 3");
     crate::kprintln!("[NX][IDT] page fault handler installed at vector 14");
+    crate::kprintln!("[NX][IDT] timer handler installed at vector 32");
 }
 
 /// Loads the IDT register

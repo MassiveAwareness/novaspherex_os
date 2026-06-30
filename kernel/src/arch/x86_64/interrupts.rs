@@ -27,7 +27,6 @@ use super::cpu;
 /// For the current early kernel state, exceptions happen in ring 0 and return
 /// to ring 0, so the CPU pushes:
 /// 
-/// text
 /// RIP
 /// CS
 /// RFLAGS
@@ -158,6 +157,57 @@ nx_isr_page_fault:
 
     // The Rust page fault handler is fatal and never returns
     hlt
+
+.global nx_isr_timer
+nx_isr_timer:
+    cld
+
+    // Save general-purpose registers.
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    // Align stack before calling Rust.
+    sub rsp, 8
+
+    // IRQ0 does not push an error code. The Rust timer handler currently
+    // needs no frame pointer, so we call it without arguments.
+    call nx_timer_handler
+
+    // Remove alignment padding.
+    add rsp, 8
+
+    // Restore general-purpose registers.
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+
+    // Return from interrupt.
+    iretq
 "#
 );
 
@@ -228,4 +278,21 @@ extern "C" fn nx_page_fault_handler(frame: &InterruptFrame, error_code: u64) -> 
     crate::kprintln!("[NX][INT] halting after page fault");
 
     cpu::panic_halt_loop();
+}
+
+/// Triggers the timer interrupt vector using a software interrupt
+/// 
+/// This does not test the PIT or PIC hardware path. It only verifies that
+/// vector 32 is installed in the IDT and that the timer ISR can call the Rust
+/// timer handler successfully.
+pub fn trigger_timer_interrupt_test() {
+    // SAFETY: `int 32` intentionally invokes the timer interrupt vector.
+    // The IDT must already contain a valid handler for vector 32.
+    //
+    // Like all interrupt instructions, this uses the stack implicitly because
+    // the CPU pushes an interrupt frame. Therefore this block must not use the
+    // `nostack` option.
+    unsafe {
+        asm!("int 32", options(nomem));
+    }
 }
