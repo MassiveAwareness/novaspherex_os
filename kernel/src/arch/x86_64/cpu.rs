@@ -298,3 +298,41 @@ pub unsafe fn write_msr(msr: u32, value: u64) {
         );
     }
 }
+
+/// Reads the current `CR3` register
+/// 
+/// `CR3` contains the physical base address of the active top-level page table.
+/// On systems with PCID enabled, low bits may contain metadata, so callers
+/// should mask the result before treating it as a physical address.
+pub fn read_cr3() -> u64 {
+    let value: u64;
+
+    // SAFETY: Reading `cr3` is a priviledged CPU register read. The kernel runs
+    // in ring 0. The instruction does not access memory or the stack.
+    unsafe {
+        asm!(
+            "mov {}, cr3",
+            out(reg) value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    value
+}
+
+/// Invalidates the TLB entry for one virtual address.
+/// 
+/// This should be called after changing a page table entry that affects the
+/// given virtual address.
+pub fn invlpg(virtual_address: u64) {
+    // SAFETY: `invlpg` invalidates the TLB entry for the provided virtual
+    // address. It does not dereference the address. The caller is responsible
+    // for ensuring that this is done after a relevant page table update.
+    unsafe {
+        asm!(
+            "invlpg [{addr}]",
+            addr = in(reg) virtual_address,
+            options(nostack, preserves_flags)
+        );
+    }
+}

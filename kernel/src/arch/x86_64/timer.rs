@@ -12,8 +12,16 @@ use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use super::{apic, pic};
 
-/// Timer frequency selected for the first timer draft.
+/// Timer vector used by both the legacy PIT/PIC draft and the Local APIC timer.
+pub const TIMER_VECTOR: u8 = 32;
+
+/// Timer frequency selected for the legacy PIT draft.
 pub const TIMER_FREQUENCY_HZ: u32 = 100;
+
+/// Experimental Local APIC timer initial count.
+///
+/// This is not calibrated yet. The goal is only to prove delivery.
+pub const APIC_TIMER_INITIAL_COUNT: u32 = 1_000_000;
 
 /// Legacy PIC End-of-Interrupt backend.
 const EOI_BACKEND_PIC: u8 = 0;
@@ -55,9 +63,6 @@ pub fn set_eoi_backend(backend: EoiBackend) {
 }
 
 /// Selects the best currently available EOI backend.
-///
-/// APIC is only selected if APIC MMIO support is ready. Otherwise the timer
-/// remains on the legacy PIC backend.
 pub fn select_best_eoi_backend() {
     if apic::mmio_ready() {
         set_eoi_backend(EoiBackend::LocalApic);
@@ -84,6 +89,31 @@ fn send_timer_eoi() {
             apic::send_eoi();
         }
     }
+}
+
+/// Initializes the best available hardware timer source.
+///
+/// If Local APIC MMIO is ready, this configures the Local APIC timer. Otherwise
+/// the kernel falls back to the legacy PIT/PIC draft.
+pub fn init_hardware_timer() {
+    if apic::mmio_ready() {
+        crate::kprintln!("[NX][TIMER] using Local APIC timer");
+
+        set_eoi_backend(EoiBackend::LocalApic);
+
+        if apic::init_timer_periodic(TIMER_VECTOR, APIC_TIMER_INITIAL_COUNT) {
+            apic::log_timer_state("after APIC timer init");
+            return;
+        }
+
+        crate::kprintln!("[NX][TIMER] APIC timer init failed, falling back to PIT/PIC");
+    }
+
+    crate::kprintln!("[NX][TIMER] using legacy PIT/PIC timer draft");
+
+    set_eoi_backend(EoiBackend::LegacyPic);
+    pic::init();
+    super::pit::init(TIMER_FREQUENCY_HZ);
 }
 
 /// Rust entry point for timer interrupts.
@@ -119,5 +149,12 @@ pub fn debug_wait_for_hardware_ticks() {
         after
     );
 
-    super::pic::log_irq_state("after timer wait");
+    match eoi_backend() {
+        EoiBackend::LegacyPic => {
+            super::pic::log_irq_state("after timer wait");
+        }
+        EoiBackend::LocalApic => {
+            super::apic::log_timer_state("after timer wait");
+        }
+    }
 }

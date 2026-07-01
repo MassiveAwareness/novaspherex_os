@@ -1,5 +1,5 @@
 //! x86_64 architecture support
-//! 
+//!
 //! This module coordinates early x86_64 CPU initialization, including the GDT,
 //! IDT, exception smoke tests, and CPU helper wrappers.
 
@@ -14,12 +14,13 @@ pub mod addr;
 pub mod apic;
 pub mod port;
 pub mod timer;
+pub mod paging;
 pub mod interrupts;
 
 /// Initializes the early x86_64 CPU baseline
-/// 
+///
 /// Current initialization order:
-/// 
+///
 /// 1. log inherited bootloader CPU state
 /// 2. load the early GDT
 /// 3. load the early IDT
@@ -40,16 +41,30 @@ pub fn init() {
     addr::init();
 
     apic::init_probe();
-    timer::select_best_eoi_backend();
 
-    pic::init();
-    pit::init(timer::TIMER_FREQUENCY_HZ);
+    paging::init();
+
+    match paging::map_local_apic_mmio() {
+        Ok(()) => {
+            crate::kprintln!("[NX][PAGING] Local APIC MMIO mapping installed");
+        },
+        Err(error) => {
+            crate::kprintln!("[NX][PAGING] Local APIC MMIO mapping failed: {:?}", error);
+        }
+    }
+
+    apic::try_init_mmio();
+
+    if apic::mmio_ready() {
+        pic::mask_all();
+    }
+
+    timer::init_hardware_timer();
 
     crate::kprintln!("[NX][CPU] enabling interrupts");
     cpu::sti();
     cpu::log_state("after sti");
 
-    pic::log_irq_state("after sti");
     timer::debug_wait_for_hardware_ticks();
 
     crate::kprintln!("[NX][ARCH] x86_64 init complete");
@@ -61,7 +76,7 @@ pub fn test_breakpoint() {
 }
 
 /// Triggers the page fault smoke test
-/// 
+///
 /// This test is fatal by design.
 pub fn test_page_fault() {
     interrupts::trigger_page_fault();
@@ -78,7 +93,7 @@ pub fn panic_halt_loop() -> ! {
 }
 
 /// Triggers the timer interrupt vector through a software interrupt
-/// 
+///
 /// This is a debug-only test for the vector 32 ISR path. It does not prove that
 /// the PIT/PIC hardware path is working.
 pub fn test_timer_interrupt() {

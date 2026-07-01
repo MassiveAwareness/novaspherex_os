@@ -223,3 +223,20 @@ pub fn log_irq_state(label: &str) {
         state.slave_isr
     );
 }
+
+/// Masks all legacy PIC IRQ lines
+/// 
+/// This is useful when switching to APIC-based interrupt delivery so that
+/// legacy PIC lines do not interfere with the APIC timer path.
+pub fn mask_all() {
+    crate::kprintln!("[NX][PIC] masking all legacy IRQs");
+
+    // SAFETY: Writing interrupt masks to PIC data ports is the standard way to
+    // disable legacy PIC IRQ delivery.
+    unsafe {
+        outb(PIC_1_DATA, 0xff);
+        outb(PIC_2_DATA, 0xff);
+    }
+
+    log_masks("after mask_all");
+}

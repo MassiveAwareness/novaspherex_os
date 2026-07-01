@@ -13,6 +13,8 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::ptr;
 
+use crate::arch::x86_64::timer;
+
 use super::gdt::KERNEL_CODE_SELECTOR;
 
 /// Number of entries in the x86_64 IDT
@@ -115,7 +117,7 @@ pub fn init() {
     unsafe {
         IDT[3].set_handler(nx_isr_breakpoint as *const () as u64);
         IDT[14].set_handler(nx_isr_page_fault as *const () as u64);
-        IDT[32].set_handler(nx_isr_timer as *const () as u64);
+        IDT[timer::TIMER_VECTOR as usize].set_handler(nx_isr_timer as *const () as u64);
 
         load_idt();
     }
@@ -123,7 +125,7 @@ pub fn init() {
     crate::kprintln!("[NX][IDT] loaded");
     crate::kprintln!("[NX][IDT] breakpoint handler installed at vector 3");
     crate::kprintln!("[NX][IDT] page fault handler installed at vector 14");
-    crate::kprintln!("[NX][IDT] timer handler installed at vector 32");
+    crate::kprintln!("[NX][IDT] timer handler installed at vector {}", timer::TIMER_VECTOR);
 }
 
 /// Loads the IDT register
