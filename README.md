@@ -1103,6 +1103,8 @@ The system can boot through a modern UEFI bootloader, receive structured boot pr
 
 The current timer research has produced a useful negative result: the PIT successfully asserts IRQ0 into the legacy PIC, and the PIC records the request, but the interrupt is not delivered to the CPU in the tested UEFI/QEMU configuration. This observation motivates the transition from legacy PIT/PIC timing toward Local APIC timer infrastructure.
 
+NovasphereX OS project currently features **33 files** and **2112 lines of code** *(as of v0.0.3)*.
+
 Thus, the project has moved from merely booting to experimentally characterizing the hardware abstraction boundary between bootloader-provided CPU state, legacy interrupt controllers, and modern APIC-based interrupt delivery.
 
 NovasphereX remains an early-stage kernel, but its current architecture already reflects the intended methodology of the project: incremental construction, observable state transitions, documented unsafe code, and measured progression from simple legacy mechanisms toward modern native operating-system facilities.
