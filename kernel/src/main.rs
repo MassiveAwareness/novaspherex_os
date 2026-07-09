@@ -14,6 +14,7 @@ mod arch;
 mod limine;
 mod serial;
 mod assets;
+mod memory;
 
 use core::panic::PanicInfo;
 
@@ -69,6 +70,9 @@ pub extern "C" fn _start() -> ! {
 
         limine::draw_rgbx_image_scaled(background.width, background.height, background.data);
     }
+
+    kprintln!("[NX] initializing memory subsystem");
+    memory::init();
 
     kprintln!("[NX] initializing CPU baseline");
     arch::init();

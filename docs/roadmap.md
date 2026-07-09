@@ -9,7 +9,7 @@ The project currently follows a deliberately staged approach: first establish a 
 ## Current Release State
 
 ```text
-v0.0.5 — Retro16 boot background pipeline
+v0.0.6 — Memory Map and Physical Frame Allocator Groundwork
 ```
 
 Current validated capabilities:
@@ -21,12 +21,21 @@ Current validated capabilities:
 * One of five boot backgrounds is selected at boot using lightweight TSC-based variation.
 * GDT and IDT are installed.
 * Breakpoint and page fault exception paths work.
+* Limine HHDM is available.
+* Physical-to-virtual address helpers work through HHDM.
+* Active `CR3` can be inspected.
 * Minimal paging helpers can walk active page tables.
-* Local APIC MMIO page can be mapped manually.
+* Local APIC MMIO page can be mapped.
 * Local APIC MMIO access is validated.
 * Local APIC EOI backend works.
 * Periodic Local APIC timer interrupts are delivered.
 * The CPU wakes from `hlt` through timer interrupts.
+* Limine memory map is requested and logged.
+* Usable memory regions are detected and summarized.
+* Early physical frame allocator initializes from the memory map.
+* 4 KiB physical frames can be allocated.
+* Paging can allocate page-table frames through the physical frame allocator.
+* Local APIC MMIO mapping no longer depends on the old static page-table pool.
 
 ---
 
@@ -105,24 +114,40 @@ Current validated capabilities:
 * [x] Active PML4 physical address detection
 * [x] Minimal page table walk
 * [x] Existing virtual-to-physical translation helper
-* [x] Tiny static early page-table pool
+* [x] Initial static page-table pool experiment
 * [x] Single-page 4 KiB mapping helper
 * [x] MMIO page mapping helper
 * [x] Local APIC MMIO mapping proof
-* [ ] Read Limine memory map
-* [ ] Classify usable and reserved memory regions
-* [ ] Preserve bootloader memory map diagnostics
-* [ ] Physical frame allocator
+* [x] Read Limine memory map
+* [x] Log Limine memory map entries
+* [x] Classify memory map regions by Limine type
+* [x] Summarize usable memory
+* [x] Skip low memory below the first 1 MiB for early allocation
+* [x] Early physical frame allocator
+* [x] 4 KiB physical frame allocation
+* [x] Frame allocator state diagnostics
+* [x] Frame allocator smoke test
+* [x] Memory subsystem initialization before architecture initialization
+* [x] Allocator-backed page-table frame allocation
+* [x] Page-table frame zeroing before use
+* [x] Replace static page-table pool for Local APIC MMIO mapping
+* [x] Paging error cases for missing allocator or exhausted frames
+* [x] Preserve bootloader memory map diagnostics
+* [x] Allocation failure diagnostics for early frame allocation
+* [x] Basic memory statistics logging
 * [ ] General page table abstraction
 * [ ] Page table entry flag abstraction
 * [ ] Kernel virtual memory map layout
 * [ ] Dedicated MMIO virtual region
 * [ ] Proper MMIO mapping API
 * [ ] Higher-half direct map wrapper
+* [ ] Frame deallocation strategy
+* [ ] Physical frame allocator bookkeeping structure
+* [ ] Bootloader-reclaimable memory policy
 * [ ] Kernel heap allocator
 * [ ] Heap smoke test
-* [ ] Allocation failure diagnostics
-* [ ] Memory statistics logging
+* [ ] Allocation failure path for heap allocations
+* [ ] Memory statistics expansion
 
 ---
 
@@ -262,19 +287,31 @@ The roadmap describes planned and completed technical capabilities, while releas
 
 ## Near-Term Direction
 
-The next major technical direction is the memory subsystem.
+The next major technical direction remains the memory subsystem, but the first foundation is now complete.
+
+Completed in v0.0.6:
+
+* parse and log the Limine memory map,
+* classify memory regions,
+* summarize usable memory,
+* initialize an early physical frame allocator,
+* allocate 4 KiB physical frames,
+* use allocator-provided frames for page-table allocation,
+* remove the static page-table pool from the Local APIC MMIO mapping path.
 
 Recommended next focus:
 
-* parse the Limine memory map,
-* classify usable and reserved regions,
-* introduce a physical frame allocator,
-* replace the temporary static page-table pool with real frame allocation,
-* formalize page table mapping APIs,
-* create a dedicated MMIO mapping region,
-* start a kernel heap.
+* formalize page-table abstractions,
+* introduce page-table entry flag types,
+* define a kernel virtual memory map layout,
+* create a dedicated MMIO virtual address region,
+* turn the Local APIC mapping proof into a proper MMIO mapping API,
+* improve physical frame allocator bookkeeping,
+* decide how and when to reclaim bootloader-reclaimable memory,
+* introduce a kernel heap allocator,
+* add a heap smoke test.
 
-This will turn the current minimal paging experiment into a real memory-management foundation.
+This will turn the current early memory foundation into a more complete kernel memory-management subsystem.
 
 ---
 

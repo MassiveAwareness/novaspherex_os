@@ -13,6 +13,30 @@
 
 use core::ptr;
 
+/// Limine memory map type: usable RAM
+pub const MEMORY_KIND_USABLE: u64 = 0;
+
+/// Limine memory map type: reserved memory
+pub const MEMORY_KIND_RESERVED: u64 = 1;
+
+/// Limine memory map type: ACII reclaimable memory
+pub const MEMORY_KIND_ACPI_RECLAIMABLE: u64 = 2;
+
+/// Limine memory map type: ACPI non-volatile storage
+pub const MEMORY_KIND_ACPI_NON_VOLATILE: u64 = 3;
+
+/// Limine memory map type: bad memory
+pub const MEMORY_KIND_BAD_MEMORY: u64 = 4;
+
+/// Limine memory map type: bootloader reclaimable memory
+pub const MEMORY_KIND_BOOTLOADER_RECLAIMABLE: u64 = 5;
+
+/// Limine memory map type: kernel and modules memory
+pub const MEMORY_KIND_KERNEL_AND_MODULES: u64 = 6;
+
+/// Limine memory map type: framebuffer memory
+pub const MEMORY_KIND_FRAMEBUFFER: u64 = 7;
+
 /// Common Limine request magic prefix
 /// 
 /// Limine request IDs start with this common two-word magic value followed by
@@ -41,6 +65,14 @@ const HHDM_REQUEST_ID: [u64; 4] = [
     COMMON_MAGIC[1],
     0x48dcf1cb8ad2b852,
     0x63984e959a98244b
+];
+
+/// Request ID for the Limine memory map request
+const MEMORY_MAP_REQUEST_ID: [u64; 4] = [
+    COMMON_MAGIC[0],
+    COMMON_MAGIC[1],
+    0x67cf_3d9d_378a_806f,
+    0xe304_acdf_c50c_3c62
 ];
 
 /// Start marker for Limine requests
@@ -100,6 +132,18 @@ static mut FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest {
 #[link_section = ".limine_requests"]
 static mut HHDM_REQUEST: HhdmRequest = HhdmRequest {
     id: HHDM_REQUEST_ID,
+    revision: 0,
+    response: ptr::null_mut()
+};
+
+/// Memory map request
+/// 
+/// Limine fills this response with an array of physical memory regions. The
+/// memory subsystem uses this to discover usable RAM and reserved regions.
+#[used]
+#[link_section = ".limine_requests"]
+static mut MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest {
+    id: MEMORY_MAP_REQUEST_ID,
     revision: 0,
     response: ptr::null_mut()
 };
@@ -204,6 +248,37 @@ pub struct HhdmRequest {
 pub struct HhdmResponse {
     revision: u64,
     pub offset: u64
+}
+
+/// Limine memory map structure
+pub struct MemoryMapRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: *mut MemoryMapResponse
+}
+
+/// Limine memory map response
+/// 
+/// `entries` points to an array of pointers. Each pointer targets one memory
+/// map entry.
+#[repr(C)]
+pub struct MemoryMapResponse {
+    revision: u64,
+    pub entry_count: u64,
+    pub entries: *const *const MemoryMapEntry
+}
+
+/// Limine memory map entry
+/// 
+/// The `kind` field uses Limine memory map entry type values. We intentionally
+/// store it as `u64` instead of a Rust enum so that unknown future values do not
+/// create invalid enum discriminants.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MemoryMapEntry {
+    pub base: u64,
+    pub length: u64,
+    pub kind: u64
 }
 
 /// Returns whether Limine acknowledged the requested base revision
@@ -456,5 +531,57 @@ pub unsafe fn draw_rgbx_image_scaled(image_width: usize, image_height: usize, da
                 write_pixel(fb.address.add(offset as usize), bytes_per_pixel, pixel);
             }
         }
+    }
+}
+
+/// Returns the Limine memory map response, if available
+pub fn memory_map_response() -> Option<&'static MemoryMapResponse> {
+    let request = ptr::addr_of!(MEMORY_MAP_REQUEST);
+
+    // SAFETY: Limine writes the response pointer before entering the kernel.
+    // We only read the pointer and convert a non-null response to a shared
+    // reference. The kernel must not invalidate bootloader-provided memory while
+    // using this response.
+    unsafe {
+        (*request).response.as_ref()
+    }
+}
+
+/// Returns one memory entry by index
+pub fn memory_map_entry(index: usize) -> Option<&'static MemoryMapEntry> {
+    let response = memory_map_response()?;
+
+    if index >= response.entry_count as usize || response.entries.is_null() {
+        return None;
+    }
+
+    // SAFETY: Limine reports `entry_count` entries and `entries` points to an
+    // array of entry pointers. Bounds and null checks are performed before
+    // dereferencing.
+    let entry_pointer = unsafe {
+        *response.entries.add(index)
+    };
+
+    if entry_pointer.is_null() {
+        return None;
+    }
+
+    // SAFETY: The entry pointer comes from Limine's memory map pointer array and
+    // was checked for null above.
+    Some(unsafe { &*entry_pointer })
+}
+
+/// Returns a readable name for a Limine memory map entry kind
+pub fn memory_kind_name(kind: u64) -> &'static str {
+    match kind {
+        MEMORY_KIND_USABLE => "Usable",
+        MEMORY_KIND_RESERVED => "Reserved",
+        MEMORY_KIND_ACPI_RECLAIMABLE => "AcpiReclaimable",
+        MEMORY_KIND_ACPI_NON_VOLATILE => "AcpiNonVolatile",
+        MEMORY_KIND_BAD_MEMORY => "BadMemory",
+        MEMORY_KIND_BOOTLOADER_RECLAIMABLE => "BootloaderReclaimable",
+        MEMORY_KIND_KERNEL_AND_MODULES => "KernelAndModules",
+        MEMORY_KIND_FRAMEBUFFER => "Framebuffer",
+        _ => "Unknown"
     }
 }

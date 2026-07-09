@@ -1,26 +1,26 @@
 //! Minimal x86_64 paging helpers
 //! 
-//! This module is not a full memory manager. It exists to support the v0.0.4
-//! Local APIC MMIO experiment by mapping one 4 KiB MMIO page into the active
-//! page tables.
+//! This module is not a full memory manager. It currently supports the v0.0.6
+//! transition from a static early page-table pool to real physical frames
+//! provided by the early frame allocator.
 //! 
 //! The implementation assumes 4-level paging and uses Limine's HHDM offset to
 //! access physical page tables through virtual addresses.
 //! 
-//! This is intentionally narrow:
+//! Current responsibilities:
 //! - read active CR3
-//! - walk page tables
+//! - walk active page tables
 //! - translate existing virtual addresses to physical addresses
-//! - allocate a tiny static pool of page tables
-//! map one 4 KiB MMIO page
-//! 
+//! - allocate new page-table frames through the physical frame allocator
+//! - map one 4 KiB page
+//! - map one MMIO page for the Local APIC
 
 #![allow(dead_code)]
 
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::arch::x86_64::{addr, apic, cpu};
+use super::{addr, apic, cpu};
+use crate::memory::frame_allocator;
 
 /// Size of one x86_64 page
 const PAGE_SIZE: usize = 4096;
@@ -31,9 +31,7 @@ const PTE_PRESENT: u64 = 1 << 0;
 /// Page table entry writable bit
 const PTE_WRITABLE: u64 = 1 << 1;
 
-/// Page-level write-through bit
-/// 
-/// For MMIO, this is part of a conservative cache-control configuration
+/// Page table entry write-through bit
 const PTE_WRITE_THROUGH: u64 = 1 << 3;
 
 /// Page-level cache-disable bit
@@ -44,8 +42,11 @@ const PTE_CACHE_DISABLE: u64 = 1 << 4;
 /// Page size bit used by 1 GiB and 2 MiB mappings
 const PTE_HUGE_PAGE: u64 = 1 << 7;
 
-/// Address mask for intermediate page-table entries
+/// Address mask for page table entries
 const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+/// Physical address mask for CR3
+const CR3_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 /// Flags used for intermediate page-table entries
 const TABLE_FLAGS: u64 = PTE_PRESENT | PTE_WRITABLE;
@@ -53,33 +54,11 @@ const TABLE_FLAGS: u64 = PTE_PRESENT | PTE_WRITABLE;
 /// Flags used for the Local APIC MMIO page
 const MMIO_PAGE_FLAGS: u64 = PTE_PRESENT | PTE_WRITABLE | PTE_WRITE_THROUGH | PTE_CACHE_DISABLE;
 
-/// Physical address mask for CR3
-const CR3_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
-
 /// One 4 KiB x86_64 page table
 #[repr(C, align(4096))]
-#[derive(Clone, Copy)]
 struct PageTable {
     entries: [u64; 512]
 }
-
-impl PageTable {
-    /// Creates a zero-filled page table
-    const fn zero() -> Self {
-        Self {
-            entries: [0; 512]
-        }
-    }
-}
-
-/// Small static page-table pool for early MMIO mapping
-/// 
-/// This is not a general allocator. It is only enough to create missing paging
-/// levels for the Local APIC virtual address path,
-static mut EARLY_TABLE_POOL: [PageTable; 3] = [PageTable::zero(); 3];
-
-/// Number of early page tables already consumed from `EARLY_TABLE_POOL`
-static EARLY_TABLES_USED: AtomicUsize = AtomicUsize::new(0);
 
 /// Errors produced by the minimal paging helpers
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,17 +66,17 @@ pub enum PagingError {
     /// Limine did not provide an HHDM offset
     NoHhdm,
 
+    /// The frame allocator was not initialized before paging needed a frame
+    FrameAllocatorUnavailable,
+
+    /// The frame allocator could not provide another physical frame
+    OutOfPhysicalFrames,
+
     /// A page table entry required for a walk was not present
     NotMapped,
 
     /// The walk encountered a huge page where a normal page table was expected
-    HugePageConflict,
-
-    /// The small static early table pool ran out of entries
-    OutOfEarlyTables,
-
-    /// A virtual address could not be translated to a physical address
-    TranslationFailed
+    HugePageConflict
 }
 
 /// Initializes paging diagnostics
@@ -117,9 +96,12 @@ pub fn active_pml4_physical() -> u64 {
 /// Maps the Local APIC MMIO page at its HHDM virtual candidate
 /// 
 /// This maps:
-/// physical 0xfee00000 -> virtual hhdm_offset + 0xfee00000
 /// 
-/// The mapping uses present, writable, write-through and cache-disable falgs
+/// ```text
+/// physical 0xfee00000 -> virtual hhdm_offset + 0xfee00000
+/// ```
+/// 
+/// The mapping uses present, writable, write_through and cache-disable flags.
 pub fn map_local_apic_mmio() -> Result<(), PagingError> {
     let physical = apic::physical_base();
 
@@ -138,15 +120,14 @@ pub fn map_local_apic_mmio() -> Result<(), PagingError> {
 
 /// Maps a single 4 KiB MMIO page
 /// 
-/// This function updates the active page tables directly
+/// This function updates the active page tables directly.
 pub fn map_mmio_page(virtual_address: u64, physical_address: u64) -> Result<(), PagingError> {
     let virtual_page = align_down_4k(virtual_address);
     let physical_page = align_down_4k(physical_address);
 
-    // SAFETY: This modifies the active page tables. The function creates
-    // missing intermediate tables from a static early pool and maps exactly one
-    // 4 KiB page. It is intended for early single-core boot before general
-    // memory management exists.
+    // SAFETY: This mutates the active page tables during controlled early boot.
+    // Missing intermediate page tables are allocated from the early physical
+    // frame allocator and zeroed before being linked into the hierarchy.
     unsafe {
         map_page_4k(virtual_page, physical_page, MMIO_PAGE_FLAGS)?;
     }
@@ -154,16 +135,17 @@ pub fn map_mmio_page(virtual_address: u64, physical_address: u64) -> Result<(), 
     cpu::invlpg(virtual_page);
 
     crate::kprintln!("[NX][PAGING] MMIO page mapped");
+
     Ok(())
 }
 
 /// Translates a virtual address to a physical address using the active tables
 /// 
-/// This supports 4 KiB, 2 MiB, and 1 GiB mappings.
+/// This supports 4 KiB, 2 MiB and 1 GiB mappings.
 pub fn virtual_to_physical_address(virtual_address: u64) -> Result<u64, PagingError> {
     let pml4 = active_pml4_mut()?;
 
-    // SAFETY: `pml4` is derived from the active CR3 physical address and
+    // SAFETY: `pml4` is derived from the active from the active CR3 physical address and
     // accessed through the HHDM. Page table walks only read entries.
     unsafe {
         translate_from_pml4(pml4, virtual_address)
@@ -183,39 +165,31 @@ unsafe fn map_page_4k(virtual_address: u64, physical_address: u64, flags: u64) -
     let pd_index = page_table_index(virtual_address, 21);
     let pt_index = page_table_index(virtual_address, 12);
 
-    let pdpt = unsafe {
-        ensure_next_table(pml4, pml4_index)?
-    };
+    let pdpt = unsafe { ensure_next_table(pml4, pml4_index)? };
+    let pd = unsafe { ensure_next_table(pdpt, pdpt_index)? };
+    let pt = unsafe { ensure_next_table(pd, pd_index)? };
 
-    let pd = unsafe {
-        ensure_next_table(pdpt, pdpt_index)?
-    };
-
-    let pt = unsafe {
-        ensure_next_table(pd, pd_index)?
-    };
-
-    // SAFETY: `pt` points to a valid page table ensured above
+    // SAFETY: `pt` points to a valid page table ensured above.
     let entry = unsafe {
         &mut (*pt).entries[pt_index]
     };
 
-    if(*entry & PTE_PRESENT) != 0 {
-        crate::kprintln!(
-            "[NX][PAGING] replacing existing PTE for virtual={:#018x}",
-            virtual_address
-        );
+    if (*entry & PTE_PRESENT) != 0 {
+        crate::kprintln!("[NX][PAGING] replacing existing PTE for virtual={:#018x}", virtual_address);
     }
 
     *entry = (physical_address & PTE_ADDR_MASK) | flags;
+
     Ok(())
 }
 
 /// Ensures that `table[index]` points to a normal next-level page table
 /// 
+/// If the entry is missing, a new page-table frame is allocated from the early
+/// physical frame allocator.
+/// 
 /// # Safety
-/// `table` must point to a valid mutable page table in the active paging
-/// hierarchy.
+/// `table` must point to a valid mutable page table in the active paging hierarchy.
 unsafe fn ensure_next_table(table: *mut PageTable, index: usize) -> Result<*mut PageTable, PagingError> {
     // SAFETY: The caller guarantees that `table` points to a valid page table.
     let entry = unsafe {
@@ -231,52 +205,39 @@ unsafe fn ensure_next_table(table: *mut PageTable, index: usize) -> Result<*mut 
         return page_table_from_physical_mut(next_physical);
     }
 
-    let (new_table, new_table_physical) = unsafe {
-        allocate_early_table()?
-    };
+    let (new_table, new_table_physical) = allocate_page_table_frame()?;
 
     *entry = (new_table_physical & PTE_ADDR_MASK) | TABLE_FLAGS;
 
     Ok(new_table)
 }
 
-/// Allocates one page table from the static early pool
-/// 
-/// # Safety
-/// This is a tiny early-boot allocator. It must not be used as a general
-/// physical frame allocator.
-unsafe fn allocate_early_table() -> Result<(*mut PageTable, u64), PagingError> {
-    let index = EARLY_TABLES_USED.fetch_add(1, Ordering::Relaxed);
-
-    if index >= 3 {
-        return Err(PagingError::OutOfEarlyTables);
+/// Allocates and zeroes one physical frame for use as a page table
+fn allocate_page_table_frame() -> Result<(*mut PageTable, u64), PagingError> {
+    if !frame_allocator::is_initialized() {
+        return Err(PagingError::FrameAllocatorUnavailable);
     }
 
-    // SAFETY: We select a unique table from the static pool using the atomic
-    // counter above. Early boot is single-core, but the atomic keeps the access
-    // explicit.
-    let table = unsafe {
-        let pool = ptr::addr_of_mut!(EARLY_TABLE_POOL) as *mut PageTable;
-        pool.add(index)
+    let Some(frame) = frame_allocator::allocate_frame() else {
+        return Err(PagingError::OutOfPhysicalFrames);
     };
 
-    // SAFETY: `table` points to one 4 KiB page table from the static pool.
+    let table = page_table_from_physical_mut(frame.start)?;
+
+    // SAFETY: The physical frame was just handed out by the frame allocator and
+    // is intended to become a page table. HHDM is used to access the frame as
+    // memory before linking it into the active page-table hierarchy.
     unsafe {
         ptr::write_bytes(table as *mut u8, 0, PAGE_SIZE);
     }
 
-    let table_virtual = table as u64;
-    let table_physical = virtual_to_physical_address(table_virtual)
-        .map_err(|_| PagingError::TranslationFailed)?;
-
     crate::kprintln!(
-        "[NX][PAGING] allocated early table index={} virtual={:#018x} physical={:#018x}",
-        index,
-        table_virtual,
-        table_physical
+        "[NX][PAGING] allocated page table frame physical={:#018x} virtual={:#018x}",
+        frame.start,
+        table as u64
     );
 
-    Ok((table, table_physical))
+    Ok((table, frame.start))
 }
 
 /// Returns the active PML4 through the HHDM
@@ -296,7 +257,7 @@ fn page_table_from_physical_mut(physical: u64) -> Result<*mut PageTable, PagingE
 /// Translates a virtual address by walking from a PML4 pointer
 /// 
 /// # Safety
-/// `pml4 must point to a valid active PML4 table.
+/// `pml4` must point to a valid active PML4 table.
 unsafe fn translate_from_pml4(pml4: *mut PageTable, virtual_address: u64) -> Result<u64, PagingError> {
     let pml4_index = page_table_index(virtual_address, 39);
     let pdpt_index = page_table_index(virtual_address, 30);
@@ -323,9 +284,10 @@ unsafe fn translate_from_pml4(pml4: *mut PageTable, virtual_address: u64) -> Res
         return Err(PagingError::NotMapped);
     }
 
-    if(pdpt_entry & PTE_HUGE_PAGE) != 0 {
+    if (pdpt_entry &PTE_HUGE_PAGE) != 0 {
         let base = pdpt_entry & PTE_ADDR_MASK;
         let offset = virtual_address & 0x3fff_ffff;
+
         return Ok(base + offset);
     }
 
@@ -336,9 +298,14 @@ unsafe fn translate_from_pml4(pml4: *mut PageTable, virtual_address: u64) -> Res
         (*pd).entries[pd_index]
     };
 
-    if(pd_entry & PTE_HUGE_PAGE) != 0 {
+    if (pd_entry & PTE_PRESENT) == 0 {
+        return Err(PagingError::NotMapped);
+    }
+
+    if (pd_entry & PTE_HUGE_PAGE) != 0 {
         let base = pd_entry & PTE_ADDR_MASK;
         let offset = virtual_address & 0x1f_ffff;
+
         return Ok(base + offset);
     }
 
@@ -349,7 +316,7 @@ unsafe fn translate_from_pml4(pml4: *mut PageTable, virtual_address: u64) -> Res
         (*pt).entries[pt_index]
     };
 
-    if(pt_entry & PTE_PRESENT) == 0 {
+    if (pt_entry & PTE_PRESENT) == 0 {
         return Err(PagingError::NotMapped);
     }
 
@@ -359,6 +326,7 @@ unsafe fn translate_from_pml4(pml4: *mut PageTable, virtual_address: u64) -> Res
     Ok(base + offset)
 }
 
+/// Returns a page-table index for a virtual address
 fn page_table_index(virtual_address: u64, shift: u8) -> usize {
     ((virtual_address >> shift) & 0x1ff) as usize
 }

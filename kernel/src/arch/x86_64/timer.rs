@@ -121,7 +121,7 @@ pub fn init_hardware_timer() {
 extern "C" fn nx_timer_handler() {
     let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed) + 1;
 
-    if tick <= 5 || tick % TIMER_FREQUENCY_HZ as u64 == 0 {
+    if should_log_tick(tick) {
         crate::kprintln!("[NX][TIMER] tick {}", tick);
     }
 
@@ -157,4 +157,12 @@ pub fn debug_wait_for_hardware_ticks() {
             super::apic::log_timer_state("after timer wait");
         }
     }
+}
+
+/// Logs early timer ticks without flooding the serial output
+/// 
+/// The Local APIC timer is not calibrated yet, so this is a diagnostic throttle,
+/// not a frequency-based reporting interval.
+fn should_log_tick(tick: u64) -> bool {
+    tick <= 5 || tick % 1000 == 0
 }
