@@ -3,6 +3,24 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path "$PSScriptRoot\.."
 $Esp = Join-Path $Root "target\esp"
 
+# --- Prepare embedded assets -----------------------------------------------
+#
+# The kernel embeds generated RGBX assets with include_bytes!, so the generated
+# files must exist before the kernel build happens inside prepare-esp.ps1.
+
+$PrepareAssetsScript = Join-Path $PSScriptRoot "prepare-assets.ps1"
+
+if (!(Test-Path $PrepareAssetsScript)) {
+    throw "Missing asset preparation script: $PrepareAssetsScript"
+}
+
+& $PrepareAssetsScript
+
+# --- Prepare UEFI ESP ------------------------------------------------------
+#
+# This script builds the kernel, fetches/reuses Limine, and prepares the ESP
+# directory used by QEMU.
+
 & "$PSScriptRoot\prepare-esp.ps1"
 
 # --- Find QEMU -------------------------------------------------------------

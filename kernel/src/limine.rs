@@ -373,3 +373,88 @@ pub fn log_hhdm() {
         }
     }
 }
+
+/// Draws a raw RGBX image scaled to the first framebuffer
+/// 
+/// The image format is:
+/// - byte 0: red
+/// - byte 1: green
+/// - byte 2: blue
+/// - byte 3: unused padding
+/// 
+/// The image os stretched to the framebuffer using nearest-neighbor sampling.
+/// This preserves the hard-edged pixel-art character better than filtered scaling.
+/// 
+/// # Safety
+/// This writes directly to a framebuffer pointer provided by Limine. The caller
+/// must ensure that this runs during early boot before another graphics owner
+/// exists.
+pub unsafe fn draw_rgbx_image_scaled(image_width: usize, image_height: usize, data: &[u8]) {
+    let request = ptr::addr_of!(FRAMEBUFFER_REQUEST);
+
+    // SAFETY: The response pointer is provided by Limine. A null response means
+    // no framebuffer is available.
+    let Some(response) = (unsafe {
+        (*request).response.as_ref()
+    }) else {
+        return;
+    };
+    if response.framebuffer_count == 0 || response.framebuffers.is_null() {
+        return;
+    }
+
+    // SAFETY: Limine reports at least one framebuffer and `framebuffers` is
+    // non-null. We read the first framebuffer pointer.
+    let framebuffer = unsafe {
+        *response.framebuffers
+    };
+
+    if framebuffer.is_null() {
+        return;
+    }
+
+    // SAFETY: The framebuffer pointer is provided by Limine and checked for
+    // null above.
+    let fb = unsafe {
+        &*framebuffer
+    };
+
+    if fb.address.is_null() || fb.bpp < 24 {
+        return;
+    }
+
+    let required_len = image_width
+        .saturating_mul(image_height)
+        .saturating_mul(4);
+
+    if data.len() < required_len {
+        return;
+    }
+
+    let framebuffer_width = fb.width as usize;
+    let framebuffer_height = fb.height as usize;
+    let bytes_per_pixel = (fb.bpp / 8) as u64;
+
+    for y in 0..framebuffer_height {
+        let source_y = y.saturating_mul(image_height) / framebuffer_height;
+
+        for x in 0..framebuffer_width {
+            let source_x = x.saturating_mul(image_width) / framebuffer_width;
+            let source_index = (source_y * image_width + source_x) * 4;
+
+            let r = data[source_index];
+            let g = data[source_index + 1];
+            let b = data[source_index + 2];
+
+            let pixel = pack_pixel(fb, r, g, b);
+            let offset = y as u64 * fb.pitch + x as u64 * bytes_per_pixel;
+
+            // SAFETY: The loop bounds target the reported framebuffer size, and
+            // the framebuffer pointer is provided by Limine. This remains raw
+            // framebuffer access, so the caller-level safety contract applies.
+            unsafe {
+                write_pixel(fb.address.add(offset as usize), bytes_per_pixel, pixel);
+            }
+        }
+    }
+}

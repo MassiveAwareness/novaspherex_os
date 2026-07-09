@@ -13,6 +13,7 @@
 mod arch;
 mod limine;
 mod serial;
+mod assets;
 
 use core::panic::PanicInfo;
 
@@ -58,7 +59,15 @@ pub extern "C" fn _start() -> ! {
             kprintln!("[NX] bootloader info unavailable");
         }
 
-        limine::draw_boot_banner();
+        let seed = arch::boot_entropy_u64();
+        let background = assets::boot_background::select(seed);
+
+        kprintln!(
+            "[NX][BOOT] selected Retro16 background bg_{}.png",
+            background.id
+        );
+
+        limine::draw_rgbx_image_scaled(background.width, background.height, background.data);
     }
 
     kprintln!("[NX] initializing CPU baseline");

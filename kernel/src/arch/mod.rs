@@ -49,3 +49,9 @@ pub fn test_timer_interrupt() {
 pub fn log_cpu_state(label: &str) {
     x86_64::log_cpu_state(label);
 }
+
+/// Returns a lightweight architecture-provided boot entropy value
+/// This is not cryptographically secure.
+pub fn boot_entropy_u64() -> u64 {
+    x86_64::boot_entropy_u64()
+}

@@ -336,3 +336,26 @@ pub fn invlpg(virtual_address: u64) {
         );
     }
 }
+
+/// Reads the CPU time-stamp counter
+/// 
+/// This is used as a lightweight early-boot entropy source for non-security
+/// decisions, such as selecting a boot background.
+/// This is not cryptographically secure randomness.
+pub fn read_tsc() -> u64 {
+    let low: u32;
+    let high: u32;
+
+    // SAFETY: `rdtsc` reads the CPU time-stamp counter into EDX:EAX. It does
+    // not access memory or the stack.
+    unsafe {
+        asm!(
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
+    ((high as u64) << 32) | low as u64
+}

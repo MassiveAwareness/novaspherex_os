@@ -104,3 +104,11 @@ pub fn test_timer_interrupt() {
 pub fn log_cpu_state(label: &str) {
     cpu::log_state(label);
 }
+
+/// Returns a lightweight early-boot entropy value
+/// 
+/// This is not suitable for cryptography. It is intended for harmless boot-time
+/// variation such as selecting a visual background.
+pub fn boot_entropy_u64() -> u64 {
+    cpu::read_tsc()
+}

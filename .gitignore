@@ -4,3 +4,4 @@
 *.img
 *.log
 .DS_Store
+/kernel/src/assets/generated
